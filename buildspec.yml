@@ -1,0 +1,58 @@
+version: 0.2
+
+env:
+  shell: bash
+  variables:
+    TERRAFORM_VERSION: "1.6.6"
+
+phases:
+  install:
+    commands:
+      - echo "Installing Terraform ${TERRAFORM_VERSION}"
+      - curl -sLo tf.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+      - unzip tf.zip && mv terraform /usr/local/bin/terraform
+      - rm -f tf.zip
+      - terraform --version
+
+  pre_build:
+    commands:
+      # Validate required env vars
+      - : "${OPCO:?Missing OPCO}"
+      - : "${DOMAIN:?Missing DOMAIN}"
+      - : "${REGION:?Missing REGION}"
+      - : "${SERVER_NAME:?Missing SERVER_NAME}"
+      - : "${STATE_BUCKET:?Missing STATE_BUCKET}"
+      - : "${STATE_BUCKET_REGION:?Missing STATE_BUCKET_REGION}"
+      - : "${STATE_LOCK_TABLE:?Missing STATE_LOCK_TABLE}"
+      - : "${VARFILE_BUCKET:?Missing VARFILE_BUCKET}"
+      - : "${VARFILE_KEY:?Missing VARFILE_KEY}"
+
+      # Optional: assume role into target account for provisioning
+      - if [[ -n "${TARGET_ROLE_ARN}" ]]; then
+          echo "Assuming role: ${TARGET_ROLE_ARN}" &&
+          aws sts assume-role --role-arn "$TARGET_ROLE_ARN" --role-session-name "tf-session" > /tmp/creds.json &&
+          export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId' /tmp/creds.json) &&
+          export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' /tmp/creds.json) &&
+          export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' /tmp/creds.json);
+        fi
+
+      # Fetch per-server var-file from S3
+      - aws s3 cp "s3://${VARFILE_BUCKET}/${VARFILE_KEY}" ./request.auto.tfvars.json
+
+      # Compose backend config dynamically
+      - export STATE_KEY="${OPCO}/${DOMAIN}/${REGION}/${SERVER_NAME}.tfstate"
+      - echo "Using STATE_KEY=${STATE_KEY}"
+      - cat > backend.auto.tfbackend <<EOF
+bucket          = "${STATE_BUCKET}"
+key             = "${STATE_KEY}"
+region          = "${STATE_BUCKET_REGION}"
+dynamodb_table  = "${STATE_LOCK_TABLE}"
+encrypt         = true
+EOF
+
+  build:
+    commands:
+      - cd ec2-provisioning-terraform
+      - terraform init -backend-config=../backend.auto.tfbackend
+      - terraform plan -var-file=../request.auto.tfvars.json -out tf.plan
+      - terraform apply -auto-approve tf.plan
