@@ -16,7 +16,6 @@ phases:
 
   pre_build:
     commands:
-      # Validate required env vars
       - : "${OPCO:?Missing OPCO}"
       - : "${DOMAIN:?Missing DOMAIN}"
       - : "${REGION:?Missing REGION}"
