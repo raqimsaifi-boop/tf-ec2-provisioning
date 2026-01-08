@@ -63,25 +63,28 @@ locals {
 }
 
 
-
-# --- Helpers to normalize SSM parameter names ---
+# --- Helpers to normalize SSM parameter names (no regex) ---
 locals {
-  # 1) Strip any accidental "ssm:" prefix (case-insensitive) from ami_ssm_param
-  #    Use regexreplace, not replace, since we need ^ prefix and (?i) case-insensitivity.
+  # 1) Case-insensitive removal of a leading "ssm:" (without changing the rest of the string)
+  #    - If the first 4 chars (lowercased) equal "ssm:", drop them; otherwise keep the string.
   instances_with_clean_ssm = {
     for n, i in local.instances_by_name : n => merge(i, {
       ami_ssm_param = (
         try(i.ami_ssm_param, null) != null
-        ? regexreplace(i.ami_ssm_param, "(?i)^ssm:", "")
+        ? (
+            length(i.ami_ssm_param) >= 4 && lower(substr(i.ami_ssm_param, 0, 4)) == "ssm:"
+            ? substr(i.ami_ssm_param, 4, length(i.ami_ssm_param) - 4)
+            : i.ami_ssm_param
+          )
         : null
       )
     })
   }
 
   # 2) Ensure exactly one leading slash and no trailing slash
-  #    "path" -> "/path"
-  #    "//path" -> "/path"
-  #    "/path/" -> "/path"
+  #    "path"     -> "/path"
+  #    "//path"   -> "/path"
+  #    "/path/"   -> "/path"
   instances_by_name_ssm_sanitized = {
     for n, i in local.instances_with_clean_ssm : n => merge(i, {
       ami_ssm_param = (
@@ -101,7 +104,7 @@ data "aws_ssm_parameter" "ami" {
   }
 
   name            = each.value.ami_ssm_param
-  with_decryption = false  # AMI ID parameter is plain String, not SecureString
+  with_decryption = false  # AMI ID stored as plain String, not SecureString
 }
 
 # --- Effective AMI selection (prefer explicit ami_id, else SSM) ---
@@ -111,6 +114,8 @@ locals {
       (try(i.ami_id, null) != null ? i.ami_id : data.aws_ssm_parameter.ami[n].value)
   }
 }
+
+
 
 
 resource "aws_instance" "this" {
