@@ -63,10 +63,11 @@ locals {
 }
 
 
-# --- Helpers to normalize SSM parameter names (no regex) ---
+
+# --- Helpers to normalize SSM parameter names (Terraform-standard, no regex) ---
 locals {
-  # 1) Case-insensitive removal of a leading "ssm:" (without changing the rest of the string)
-  #    - If the first 4 chars (lowercased) equal "ssm:", drop them; otherwise keep the string.
+  # 1) Case-insensitive removal of a leading "ssm:" (without altering the rest)
+  #    Use substr/lower to test the first 4 chars, then slice if needed.
   instances_with_clean_ssm = {
     for n, i in local.instances_by_name : n => merge(i, {
       ami_ssm_param = (
@@ -82,14 +83,14 @@ locals {
   }
 
   # 2) Ensure exactly one leading slash and no trailing slash
-  #    "path"     -> "/path"
-  #    "//path"   -> "/path"
-  #    "/path/"   -> "/path"
+  #    "path"    -> "/path"
+  #    "//path"  -> "/path"
+  #    "/path/"  -> "/path"
   instances_by_name_ssm_sanitized = {
     for n, i in local.instances_with_clean_ssm : n => merge(i, {
       ami_ssm_param = (
         try(i.ami_ssm_param, null) != null
-        ? "/" + trim(i.ami_ssm_param, "/")
+        ? "/${trim(i.ami_ssm_param, "/")}"        # <-- interpolation, not '+'
         : null
       )
     })
@@ -104,7 +105,7 @@ data "aws_ssm_parameter" "ami" {
   }
 
   name            = each.value.ami_ssm_param
-  with_decryption = false  # AMI ID stored as plain String, not SecureString
+  with_decryption = false  # SSM value is a plain String AMI ID
 }
 
 # --- Effective AMI selection (prefer explicit ami_id, else SSM) ---
