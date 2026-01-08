@@ -62,18 +62,56 @@ locals {
   fallback_sg_ids = try(data.aws_security_groups.candidates.ids, [])
 }
 
-# --- AMI via SSM Parameter (optional) ---
-data "aws_ssm_parameter" "ami" {
-  for_each = { for n, i in local.instances_by_name : n => i if try(i.ami_ssm_param, null) != null }
-  name     = each.value.ami_ssm_param
+
+
+# --- Helpers to normalize SSM parameter names ---
+locals {
+  # 1) Strip any accidental "ssm:" prefix (case-insensitive) from ami_ssm_param
+  #    Use regexreplace, not replace, since we need ^ prefix and (?i) case-insensitivity.
+  instances_with_clean_ssm = {
+    for n, i in local.instances_by_name : n => merge(i, {
+      ami_ssm_param = (
+        try(i.ami_ssm_param, null) != null
+        ? regexreplace(i.ami_ssm_param, "(?i)^ssm:", "")
+        : null
+      )
+    })
+  }
+
+  # 2) Ensure exactly one leading slash and no trailing slash
+  #    "path" -> "/path"
+  #    "//path" -> "/path"
+  #    "/path/" -> "/path"
+  instances_by_name_ssm_sanitized = {
+    for n, i in local.instances_with_clean_ssm : n => merge(i, {
+      ami_ssm_param = (
+        try(i.ami_ssm_param, null) != null
+        ? "/" + trim(i.ami_ssm_param, "/")
+        : null
+      )
+    })
+  }
 }
 
+# --- AMI via SSM Parameter (optional) ---
+data "aws_ssm_parameter" "ami" {
+  for_each = {
+    for n, i in local.instances_by_name_ssm_sanitized :
+    n => i if try(i.ami_ssm_param, null) != null
+  }
+
+  name            = each.value.ami_ssm_param
+  with_decryption = false  # AMI ID parameter is plain String, not SecureString
+}
+
+# --- Effective AMI selection (prefer explicit ami_id, else SSM) ---
 locals {
   effective_ami = {
-    for n, i in local.instances_by_name : n =>
+    for n, i in local.instances_by_name_ssm_sanitized : n =>
       (try(i.ami_id, null) != null ? i.ami_id : data.aws_ssm_parameter.ami[n].value)
   }
 }
+
 
 resource "aws_instance" "this" {
   for_each = local.instances_by_name
