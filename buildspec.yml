@@ -9,25 +9,24 @@ phases:
   install:
     commands:
       - echo "Installing Terraform ${TERRAFORM_VERSION}"
-      - curl -sLo tf.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
-      - unzip tf.zip && mv terraform /usr/local/bin/terraform
-      - rm -f tf.zip
-      - terraform --version
-      # Ensure jq is available for assume-role parsing
-      - yum install -y jq || true
+      - "curl -sLo tf.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+      - "unzip tf.zip && mv terraform /usr/local/bin/terraform"
+      - "rm -f tf.zip"
+      - "terraform --version"
+      - "yum install -y jq || true"
 
   pre_build:
     commands:
       # Validate required env vars passed by Lambda
-      - : "${OPCO:?Missing OPCO}"
-      - : "${DOMAIN:?Missing DOMAIN}"
-      - : "${REGION:?Missing REGION}"
-      - : "${SERVER_NAME:?Missing SERVER_NAME}"
-      - : "${STATE_BUCKET:?Missing STATE_BUCKET}"
-      - : "${STATE_BUCKET_REGION:?Missing STATE_BUCKET_REGION}"
-      - : "${STATE_LOCK_TABLE:?Missing STATE_LOCK_TABLE}"
-      - : "${VARFILE_BUCKET:?Missing VARFILE_BUCKET}"
-      - : "${VARFILE_KEY:?Missing VARFILE_KEY}"
+      - ': "${OPCO:?Missing OPCO}"'
+      - ': "${DOMAIN:?Missing DOMAIN}"'
+      - ': "${REGION:?Missing REGION}"'
+      - ': "${SERVER_NAME:?Missing SERVER_NAME}"'
+      - ': "${STATE_BUCKET:?Missing STATE_BUCKET}"'
+      - ': "${STATE_BUCKET_REGION:?Missing STATE_BUCKET_REGION}"'
+      - ': "${STATE_LOCK_TABLE:?Missing STATE_LOCK_TABLE}"'
+      - ': "${VARFILE_BUCKET:?Missing VARFILE_BUCKET}"'
+      - ': "${VARFILE_KEY:?Missing VARFILE_KEY}"'
 
       # Optional: assume role into target account for provisioning
       - |
@@ -40,23 +39,20 @@ phases:
         fi
 
       # Fetch per-server var-file from S3
-      - aws s3 cp "s3://${VARFILE_BUCKET}/${VARFILE_KEY}" ./request.auto.tfvars.json
+      - "aws s3 cp s3://${VARFILE_BUCKET}/${VARFILE_KEY} ./request.auto.tfvars.json"
 
-      # Compose backend config dynamically (per server tfstate)
-      - export STATE_KEY="${OPCO}/${DOMAIN}/${REGION}/${SERVER_NAME}.tfstate"
-      - echo "Using STATE_KEY=${STATE_KEY}"
-      - |
-        cat > backend.auto.tfbackend <<EOF
-        bucket          = "${STATE_BUCKET}"
-        key             = "${STATE_KEY}"
-        region          = "${STATE_BUCKET_REGION}"
-        dynamodb_table  = "${STATE_LOCK_TABLE}"
-        encrypt         = true
-        EOF
+      # Compose backend config dynamically (per-server tfstate) via printf (no heredoc)
+      - 'export STATE_KEY="${OPCO}/${DOMAIN}/${REGION}/${SERVER_NAME}.tfstate"'
+      - 'echo "Using STATE_KEY=${STATE_KEY}"'
+      - 'printf "bucket = \\"%s\\"\\n"  "${STATE_BUCKET}"           >  backend.auto.tfbackend'
+      - 'printf "key    = \\"%s\\"\\n"  "${STATE_KEY}"              >> backend.auto.tfbackend'
+      - 'printf "region = \\"%s\\"\\n"  "${STATE_BUCKET_REGION}"    >> backend.auto.tfbackend'
+      - 'printf "dynamodb_table = \\"%s\\"\\n"  "${STATE_LOCK_TABLE}" >> backend.auto.tfbackend'
+      - 'printf "encrypt = true\\n"                               >> backend.auto.tfbackend'
 
   build:
     commands:
-      - cd ec2-provisioning-terraform
-      - terraform init -backend-config=../backend.auto.tfbackend
-      - terraform plan -var-file=../request.auto.tfvars.json -out tf.plan
-      - terraform apply -auto-approve tf.plan
+      - "cd ec2-provisioning-terraform"
+      - "terraform init -backend-config=../backend.auto.tfbackend"
+      - "terraform plan -var-file=../request.auto.tfvars.json -out tf.plan"
+      - "terraform apply -auto-approve tf.plan"
