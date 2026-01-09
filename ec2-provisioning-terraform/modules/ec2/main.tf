@@ -122,34 +122,36 @@ locals {
 resource "aws_instance" "this" {
   for_each = local.instances_by_name
 
-  ami                    = local.effective_ami[each.key]
-  instance_type          = each.value.instance_type
-
-  # Prefer per-instance override; else use network.subnet_id from Lambda; else fallback to tags
-  subnet_id              = coalesce(
+  # --- Core inputs from your tfvars/Lambda ---
+  ami               = local.effective_ami[each.key]
+  instance_type     = each.value.instance_type
+  subnet_id         = coalesce(
     try(each.value.subnet_id, null),
     try(var.network.subnet_id, null),
     local.fallback_subnet_id
   )
-
+  
   vpc_security_group_ids = coalesce(
     try(each.value.security_group_ids, null),
     try(var.network.security_group_ids, null),
     local.fallback_sg_ids
   )
+  key_name              = each.value.key_name
+  iam_instance_profile  = each.value.iam_instance_profile
+  associate_public_ip_address = try(each.value.enable_public_ip, false)
 
-  key_name               = each.value.key_name
-  iam_instance_profile   = each.value.iam_instance_profile
-  associate_public_ip_address = each.value.enable_public_ip
-
+  # --- Root volume (encrypted) ---
   root_block_device {
-    volume_size = each.value.ebs_root_size_gb
-    volume_type = each.value.ebs_root_type
-    iops        = try(each.value.ebs_root_iops, 0) > 0 ? each.value.ebs_root_iops : null
-    encrypted   = true
+    volume_size           = each.value.ebs_root_size_gb
+    volume_type           = each.value.ebs_root_type
+    iops                  = try(each.value.ebs_root_iops, 0) > 0 ? each.value.ebs_root_iops : null
+    encrypted             = true
+    # OPTIONAL: If your SCP mandates CMK, set this to an approved KMS key ARN.
+    # kms_key_id            = try(var.kms_key_arn, null)
     delete_on_termination = true
   }
 
+  # --- Additional EBS volumes (if provided in tfvars) ---
   dynamic "ebs_block_device" {
     for_each = try(each.value.additional_volumes, [])
     content {
@@ -157,35 +159,60 @@ resource "aws_instance" "this" {
       volume_size           = ebs_block_device.value.size_gb
       volume_type           = ebs_block_device.value.type
       iops                  = try(ebs_block_device.value.iops, 0) > 0 ? ebs_block_device.value.iops : null
-      encrypted             = ebs_block_device.value.encrypted
+      encrypted             = try(ebs_block_device.value.encrypted, true)
+      # OPTIONAL: uncomment if SCP enforces CMK usage on all volumes.
+      # kms_key_id            = try(var.kms_key_arn, null)
       delete_on_termination = true
     }
   }
 
+  # --- User data (optional) ---
   user_data_base64 = try(each.value.user_data_base64, null)
 
+  # --- Instance tags (dynamic from tfvars + standard) ---
   tags = merge(
     {
-      "Name"            = each.value.name,
-      "ManagedBy"       = "Terraform",
-      "ProvisionSource" = "Lambda+CodeBuild"
+      Name            = each.value.name,
+      ManagedBy       = "Terraform",
+      ProvisionSource = "Lambda+CodeBuild"
     },
-    each.value.tags
+    try(each.value.tags, {})
   )
 
-  # Guardrails so Terraform fails early if discovery fails
+  # --- Volume tags (root + EBS volumes created with this instance) ---
+  # Tags applied at instance creation time to block devices.
+  volume_tags = merge(
+    {
+      Name            = each.value.name,
+      ManagedBy       = "Terraform",
+      ProvisionSource = "Lambda+CodeBuild"
+    },
+    try(each.value.tags, {})
+  )
+
+  # --- Guardrails to fail early if discovery didn’t find required infra ---
   lifecycle {
     precondition {
       condition     = local.selected_vpc_id != null
       error_message = "No VPC matched tag filters and no vpc_id override was provided."
     }
     precondition {
-      condition     = coalesce(try(each.value.subnet_id, null), try(var.network.subnet_id, null), local.fallback_subnet_id) != null
+      condition     = coalesce(
+        try(each.value.subnet_id, null),
+        try(var.network.subnet_id, null),
+        local.fallback_subnet_id
+      ) != null
       error_message = "No Subnet matched tag filters and no subnet_id override was provided."
     }
     precondition {
-      condition     = length(coalesce(try(each.value.security_group_ids, null), try(var.network.security_group_ids, null), local.fallback_sg_ids)) > 0
+      condition     = length(coalesce(
+        try(each.value.security_group_ids, null),
+        try(var.network.security_group_ids, null),
+        local.fallback_sg_ids
+      )) > 0
       error_message = "No Security Groups matched tag filters and no security_group_ids override was provided."
     }
   }
 }
+
+
