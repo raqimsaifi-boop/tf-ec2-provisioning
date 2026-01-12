@@ -9,11 +9,11 @@ phases:
   install:
     commands:
       - echo "Installing Terraform ${TERRAFORM_VERSION}"
-      - "curl -sLo tf.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
-      - "unzip tf.zip && mv terraform /usr/local/bin/terraform"
-      - "rm -f tf.zip"
-      - "terraform --version"
-      - "yum install -y jq || true"
+      - curl -sLo tf.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+      - unzip tf.zip && mv terraform /usr/local/bin/terraform
+      - rm -f tf.zip
+      - terraform --version
+      - yum install -y jq || true
 
   pre_build:
     commands:
@@ -39,20 +39,43 @@ phases:
         fi
 
       # Fetch per-server var-file from S3
-      - "aws s3 cp s3://${VARFILE_BUCKET}/${VARFILE_KEY} ./request.auto.tfvars.json"
+      - aws s3 cp "s3://${VARFILE_BUCKET}/${VARFILE_KEY}" ./request.auto.tfvars.json
 
-      # Compose backend config dynamically (per-server tfstate) via printf (no heredoc)
-      - 'export STATE_KEY="${OPCO}/${DOMAIN}/${REGION}/${SERVER_NAME}.tfstate"'
-      - 'echo "Using STATE_KEY=${STATE_KEY}"'
-      - 'printf "bucket = \\"%s\\"\\n"  "${STATE_BUCKET}"           >  backend.auto.tfbackend'
-      - 'printf "key    = \\"%s\\"\\n"  "${STATE_KEY}"              >> backend.auto.tfbackend'
-      - 'printf "region = \\"%s\\"\\n"  "${STATE_BUCKET_REGION}"    >> backend.auto.tfbackend'
-      - 'printf "dynamodb_table = \\"%s\\"\\n"  "${STATE_LOCK_TABLE}" >> backend.auto.tfbackend'
-      - 'printf "encrypt = true\\n"                               >> backend.auto.tfbackend'
+      # Compose backend config dynamically (per-server tfstate) using HEREDOC to avoid escape issues
+      - export STATE_KEY="${OPCO}/${DOMAIN}/${REGION}/${SERVER_NAME}.tfstate"
+      - echo "Using STATE_KEY=${STATE_KEY}"
+      - |
+        cat > backend.auto.tfbackend <<EOF
+        bucket          = "${STATE_BUCKET}"
+        key             = "${STATE_KEY}"
+        region          = "${STATE_BUCKET_REGION}"
+        dynamodb_table  = "${STATE_LOCK_TABLE}"
+        encrypt         = true
+        EOF
+
+      # Normalize file endings to Unix LF and strip any stray CR
+      - sed -i 's/\r$//' backend.auto.tfbackend
+
+      # Diagnostic: show exact characters (look for \n or \r or extra backslashes)
+      - echo "=== backend.auto.tfbackend (escaped view) ==="
+      - cat -A backend.auto.tfbackend
+      - echo "=== backend.auto.tfbackend (raw) ==="
+      - sed -n '1,200p' backend.auto.tfbackend
+
+      # Basic validation: required keys present
+      - |
+        for k in bucket key region dynamodb_table; do
+          if ! grep -q "^${k} " backend.auto.tfbackend; then
+            echo "Missing backend key: ${k}"
+            exit 1
+          fi
+        done
 
   build:
     commands:
-      - "cd ec2-provisioning-terraform"
-      - "terraform init -backend-config=../backend.auto.tfbackend"
-      - "terraform plan -var-file=../request.auto.tfvars.json -out tf.plan"
-      - "terraform apply -auto-approve tf.plan"
+      - cd ec2-provisioning-terraform
+      # Ensure we have a backend block declared in the root module (once in HCL):
+      # terraform { backend "s3" {} }
+      - terraform init -input=false -reconfigure -backend-config=../backend.auto.tfbackend
+      - terraform plan  -input=false -var-file=../request.auto.tfvars.json -out tf.plan
+      - terraform apply -input=false -auto-approve tf.plan
