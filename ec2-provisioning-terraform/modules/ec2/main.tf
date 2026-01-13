@@ -130,46 +130,84 @@ resource "aws_instance" "this" {
     try(var.network.subnet_id, null),
     local.fallback_subnet_id
   )
-  
+
   vpc_security_group_ids = coalesce(
     try(each.value.security_group_ids, null),
     try(var.network.security_group_ids, null),
     local.fallback_sg_ids
   )
-  key_name              = each.value.key_name
-  iam_instance_profile  = each.value.iam_instance_profile
+  key_name                    = each.value.key_name
+  iam_instance_profile        = each.value.iam_instance_profile
   associate_public_ip_address = try(each.value.enable_public_ip, false)
 
-  # --- Root volume (encrypted) ---
-  root_block_device {
-    volume_size           = each.value.ebs_root_size_gb
-    volume_type           = each.value.ebs_root_type
-    iops                  = try(each.value.ebs_root_iops, 0) > 0 ? each.value.ebs_root_iops : null
-    encrypted             = true
-    # OPTIONAL: If your SCP mandates CMK, set this to an approved KMS key ARN.
-    # kms_key_id            = try(var.kms_key_arn, null)
-    delete_on_termination = true
+  # ============================================================
+  # Root volume — OMIT iops unless explicitly provided (> 0)
+  # ============================================================
+  # Emit a root_block_device WITHOUT iops when ebs_root_iops is not provided
+  dynamic "root_block_device" {
+    for_each = try(each.value.ebs_root_iops, 0) > 0 ? [] : [true]
+    content {
+      volume_size           = each.value.ebs_root_size_gb
+      volume_type           = each.value.ebs_root_type
+      encrypted             = true
+      delete_on_termination = true
+      # kms_key_id          = try(var.kms_key_arn, null)  # optional
+    }
   }
 
-  # --- Additional EBS volumes (if provided in tfvars) ---
+  # Emit a root_block_device WITH iops only when user provided a positive number
+  dynamic "root_block_device" {
+    for_each = try(each.value.ebs_root_iops, 0) > 0 ? [true] : []
+    content {
+      volume_size           = each.value.ebs_root_size_gb
+      volume_type           = each.value.ebs_root_type
+      iops                  = each.value.ebs_root_iops
+      encrypted             = true
+      delete_on_termination = true
+      # kms_key_id          = try(var.kms_key_arn, null)  # optional
+    }
+  }
+
+  # =====================================================================
+  # Additional EBS volumes — emit iops ONLY when explicitly provided
+  # =====================================================================
+  # 1) Volumes WITH IOPS: io1/io2/gp3 & iops > 0
   dynamic "ebs_block_device" {
-    for_each = try(each.value.additional_volumes, [])
+    for_each = [
+      for v in try(each.value.additional_volumes, []) : v
+      if contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0
+    ]
     content {
       device_name           = ebs_block_device.value.device_name
       volume_size           = ebs_block_device.value.size_gb
-      volume_type           = ebs_block_device.value.type
-      iops                  = try(ebs_block_device.value.iops, 0) > 0 ? ebs_block_device.value.iops : null
+      volume_type           = lower(ebs_block_device.value.type)
+      iops                  = ebs_block_device.value.iops
       encrypted             = try(ebs_block_device.value.encrypted, true)
-      # OPTIONAL: uncomment if SCP enforces CMK usage on all volumes.
-      # kms_key_id            = try(var.kms_key_arn, null)
       delete_on_termination = true
+      # kms_key_id          = try(var.kms_key_arn, null)  # optional
+    }
+  }
+
+  # 2) Volumes WITHOUT IOPS: omit attribute; gp3 defaults (3000 IOPS) apply
+  dynamic "ebs_block_device" {
+    for_each = [
+      for v in try(each.value.additional_volumes, []) : v
+      if !(contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0)
+    ]
+    content {
+      device_name           = ebs_block_device.value.device_name
+      volume_size           = ebs_block_device.value.size_gb
+      volume_type           = lower(ebs_block_device.value.type)
+      encrypted             = try(ebs_block_device.value.encrypted, true)
+      delete_on_termination = true
+      # kms_key_id          = try(var.kms_key_arn, null)  # optional
     }
   }
 
   # --- User data (optional) ---
   user_data_base64 = try(each.value.user_data_base64, null)
 
-  # --- Instance tags (dynamic from tfvars + standard) ---
+  # --- Instance tags ---
   tags = merge(
     {
       Name            = each.value.name,
@@ -179,8 +217,7 @@ resource "aws_instance" "this" {
     try(each.value.tags, {})
   )
 
-  # --- Volume tags (root + EBS volumes created with this instance) ---
-  # Tags applied at instance creation time to block devices.
+  # --- Volume tags (root + EBS) ---
   volume_tags = merge(
     {
       Name            = each.value.name,
@@ -190,7 +227,7 @@ resource "aws_instance" "this" {
     try(each.value.tags, {})
   )
 
-  # --- Guardrails to fail early if discovery didn’t find required infra ---
+  # --- Guardrails (unchanged) ---
   lifecycle {
     precondition {
       condition     = local.selected_vpc_id != null
@@ -214,5 +251,3 @@ resource "aws_instance" "this" {
     }
   }
 }
-
-
