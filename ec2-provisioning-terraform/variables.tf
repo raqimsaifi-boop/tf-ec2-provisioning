@@ -4,6 +4,13 @@ variable "region" {
   default     = "ap-south-1"
 }
 
+
+variable "target_role_arn" {
+  type        = string
+  description = "IAM role ARN in target account that Terraform should assume for resource operations"
+  sensitive   = true
+}
+
 variable "network" {
   description = "See modules/ec2/variables.tf"
   type = object({
