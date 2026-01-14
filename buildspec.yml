@@ -70,7 +70,7 @@ phases:
             exit 1
           fi
         done
-        
+
   build:
     commands:
       - cd ec2-provisioning-terraform
@@ -78,8 +78,13 @@ phases:
       - terraform init -input=false -reconfigure -backend-config=../backend.auto.tfbackend
 
       # Pass target role to Terraform via variables; provider will assume it
-      - terraform plan  -input=false \
+      
+      - |
+        terraform plan \
+          -input=false \
           -var-file=../request.auto.tfvars.json \
           -var="target_role_arn=${TARGET_ROLE_ARN}" \
-          -out tf.plan
+          -out=tf.plan
+
+
       - terraform apply -input=false -auto-approve tf.plan
