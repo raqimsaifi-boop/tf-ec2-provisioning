@@ -204,22 +204,22 @@ resource "aws_instance" "this" {
   #   }
   # }
 
-  # --- Root volume (gp3 by default; iops/throughput optional via null-safe attrs) ---
-  root_block_device {
-    volume_size = each.value.ebs_root_size_gb
-    volume_type = try(each.value.ebs_root_type, "gp3")
 
-    # If not provided, keep null so Terraform omits the attribute and AWS uses gp3 defaults.
-    iops       = try(each.value.ebs_root_iops, null)
-    
-    # Throughput is only valid for gp3—set to null if type != gp3
-    throughput = lower(try(each.value.ebs_root_type, "gp3")) == "gp3"
-      ? try(each.value.ebs_root_throughput, null)
-      : null
-    encrypted             = true
-    delete_on_termination = true
-    # kms_key_id          = try(var.kms_key_arn, null)  # optional CMK
-  }
+root_block_device {
+  volume_size = each.value.ebs_root_size_gb
+  # Always give a string to the provider; default to gp3
+  volume_type = coalesce(try(each.value.ebs_root_type, null), "gp3")
+
+  # Optional; null means "omit" so AWS uses gp3 defaults
+  iops = try(each.value.ebs_root_iops, null)
+
+  # Only valid for gp3; use a ONE-LINE ternary and guard lower() with coalesce()
+  throughput = (lower(coalesce(try(each.value.ebs_root_type, null), "gp3")) == "gp3") ? try(each.value.ebs_root_throughput, null) : null
+
+  encrypted             = true
+  delete_on_termination = true
+  # kms_key_id          = try(var.kms_key_arn, null)
+}
 
   # --- Additional EBS volumes (optional; gp3 defaults; iops/throughput optional) ---
   dynamic "ebs_block_device" {
@@ -233,9 +233,8 @@ resource "aws_instance" "this" {
       iops = try(ebs_block_device.value.iops, null)
 
       # Throughput only applies to gp3
-      throughput = lower(try(ebs_block_device.value.type, "gp3")) == "gp3"
-        ? try(ebs_block_device.value.throughput, null)
-        : null
+      throughput = (lower(try(ebs_block_device.value.type, "gp3")) == "gp3") ? try(ebs_block_device.value.throughput, null) : null
+
       encrypted             = try(ebs_block_device.value.encrypted, true)
       delete_on_termination = true
       # kms_key_id          = try(var.kms_key_arn, null)  # optional CMK
