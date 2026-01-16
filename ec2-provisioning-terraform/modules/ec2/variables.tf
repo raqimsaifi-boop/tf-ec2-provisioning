@@ -53,6 +53,7 @@ variable "instances" {
       size_gb     = number
       type        = string
       iops        = optional(number)
+      throughput  = optional(number) 
       encrypted   = bool
     })), [])
     user_data_base64     = optional(string)

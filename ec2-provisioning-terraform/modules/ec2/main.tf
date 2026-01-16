@@ -140,67 +140,105 @@ resource "aws_instance" "this" {
   iam_instance_profile        = each.value.iam_instance_profile
   associate_public_ip_address = try(each.value.enable_public_ip, false)
 
-  # ============================================================
-  # Root volume — OMIT iops unless explicitly provided (> 0)
-  # ============================================================
-  # Emit a root_block_device WITHOUT iops when ebs_root_iops is not provided
-  dynamic "root_block_device" {
-    for_each = try(each.value.ebs_root_iops, 0) > 0 ? [] : [true]
-    content {
-      volume_size           = each.value.ebs_root_size_gb
-      volume_type           = each.value.ebs_root_type
-      encrypted             = true
-      delete_on_termination = true
-      # kms_key_id          = try(var.kms_key_arn, null)  # optional
-    }
+  # # ============================================================
+  # # Root volume — OMIT iops unless explicitly provided (> 0)
+  # # ============================================================
+  # # Emit a root_block_device WITHOUT iops when ebs_root_iops is not provided
+  # dynamic "root_block_device" {
+  #   for_each = try(each.value.ebs_root_iops, 0) > 0 ? [] : [true]
+  #   content {
+  #     volume_size           = each.value.ebs_root_size_gb
+  #     volume_type           = each.value.ebs_root_type
+  #     encrypted             = true
+  #     delete_on_termination = true
+  #     # kms_key_id          = try(var.kms_key_arn, null)  # optional
+  #   }
+  # }
+
+  # # Emit a root_block_device WITH iops only when user provided a positive number
+  # dynamic "root_block_device" {
+  #   for_each = try(each.value.ebs_root_iops, 0) > 0 ? [true] : []
+  #   content {
+  #     volume_size           = each.value.ebs_root_size_gb
+  #     volume_type           = each.value.ebs_root_type
+  #     iops                  = each.value.ebs_root_iops
+  #     encrypted             = true
+  #     delete_on_termination = true
+  #     # kms_key_id          = try(var.kms_key_arn, null)  # optional
+  #   }
+  # }
+
+  # # =====================================================================
+  # # Additional EBS volumes — emit iops ONLY when explicitly provided
+  # # =====================================================================
+  # # 1) Volumes WITH IOPS: io1/io2/gp3 & iops > 0
+  # dynamic "ebs_block_device" {
+  #   for_each = [
+  #     for v in try(each.value.additional_volumes, []) : v
+  #     if contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0
+  #   ]
+  #   content {
+  #     device_name           = ebs_block_device.value.device_name
+  #     volume_size           = ebs_block_device.value.size_gb
+  #     volume_type           = lower(ebs_block_device.value.type)
+  #     iops                  = ebs_block_device.value.iops
+  #     encrypted             = try(ebs_block_device.value.encrypted, true)
+  #     delete_on_termination = true
+  #     # kms_key_id          = try(var.kms_key_arn, null)  # optional
+  #   }
+  # }
+
+  # # 2) Volumes WITHOUT IOPS: omit attribute; gp3 defaults (3000 IOPS) apply
+  # dynamic "ebs_block_device" {
+  #   for_each = [
+  #     for v in try(each.value.additional_volumes, []) : v
+  #     if !(contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0)
+  #   ]
+  #   content {
+  #     device_name           = ebs_block_device.value.device_name
+  #     volume_size           = ebs_block_device.value.size_gb
+  #     volume_type           = lower(ebs_block_device.value.type)
+  #     encrypted             = try(ebs_block_device.value.encrypted, true)
+  #     delete_on_termination = true
+  #     # kms_key_id          = try(var.kms_key_arn, null)  # optional
+  #   }
+  # }
+
+  # --- Root volume (gp3 by default; iops/throughput optional via null-safe attrs) ---
+  root_block_device {
+    volume_size = each.value.ebs_root_size_gb
+    volume_type = try(each.value.ebs_root_type, "gp3")
+
+    # If not provided, keep null so Terraform omits the attribute and AWS uses gp3 defaults.
+    iops       = try(each.value.ebs_root_iops, null)
+    
+    # Throughput is only valid for gp3—set to null if type != gp3
+    throughput = lower(try(each.value.ebs_root_type, "gp3")) == "gp3"
+      ? try(each.value.ebs_root_throughput, null)
+      : null
+    encrypted             = true
+    delete_on_termination = true
+    # kms_key_id          = try(var.kms_key_arn, null)  # optional CMK
   }
 
-  # Emit a root_block_device WITH iops only when user provided a positive number
-  dynamic "root_block_device" {
-    for_each = try(each.value.ebs_root_iops, 0) > 0 ? [true] : []
-    content {
-      volume_size           = each.value.ebs_root_size_gb
-      volume_type           = each.value.ebs_root_type
-      iops                  = each.value.ebs_root_iops
-      encrypted             = true
-      delete_on_termination = true
-      # kms_key_id          = try(var.kms_key_arn, null)  # optional
-    }
-  }
-
-  # =====================================================================
-  # Additional EBS volumes — emit iops ONLY when explicitly provided
-  # =====================================================================
-  # 1) Volumes WITH IOPS: io1/io2/gp3 & iops > 0
+  # --- Additional EBS volumes (optional; gp3 defaults; iops/throughput optional) ---
   dynamic "ebs_block_device" {
-    for_each = [
-      for v in try(each.value.additional_volumes, []) : v
-      if contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0
-    ]
+    for_each = try(each.value.additional_volumes, [])
     content {
-      device_name           = ebs_block_device.value.device_name
-      volume_size           = ebs_block_device.value.size_gb
-      volume_type           = lower(ebs_block_device.value.type)
-      iops                  = ebs_block_device.value.iops
+      device_name = ebs_block_device.value.device_name
+      volume_size = ebs_block_device.value.size_gb
+      volume_type = lower(try(ebs_block_device.value.type, "gp3"))
+
+      # For io1/io2/gp3, iops can be provided; else keep null.
+      iops = try(ebs_block_device.value.iops, null)
+
+      # Throughput only applies to gp3
+      throughput = lower(try(ebs_block_device.value.type, "gp3")) == "gp3"
+        ? try(ebs_block_device.value.throughput, null)
+        : null
       encrypted             = try(ebs_block_device.value.encrypted, true)
       delete_on_termination = true
-      # kms_key_id          = try(var.kms_key_arn, null)  # optional
-    }
-  }
-
-  # 2) Volumes WITHOUT IOPS: omit attribute; gp3 defaults (3000 IOPS) apply
-  dynamic "ebs_block_device" {
-    for_each = [
-      for v in try(each.value.additional_volumes, []) : v
-      if !(contains(["io1","io2","gp3"], lower(try(v.type, ""))) && try(v.iops, 0) > 0)
-    ]
-    content {
-      device_name           = ebs_block_device.value.device_name
-      volume_size           = ebs_block_device.value.size_gb
-      volume_type           = lower(ebs_block_device.value.type)
-      encrypted             = try(ebs_block_device.value.encrypted, true)
-      delete_on_termination = true
-      # kms_key_id          = try(var.kms_key_arn, null)  # optional
+      # kms_key_id          = try(var.kms_key_arn, null)  # optional CMK
     }
   }
 
